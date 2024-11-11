@@ -53,6 +53,7 @@ pub fn TreeType(comptime TreeTable: type, comptime Storage: type) type {
         pub const Table = TreeTable;
         pub const TableMemory = @import("table_memory.zig").TableMemoryType(Table);
         pub const Manifest = @import("manifest.zig").ManifestType(Table, Storage);
+        pub const BTree = @import("btree.zig").BTreeType(Table);
 
         const Grid = GridType(Storage);
         const ManifestLog = @import("manifest_log.zig").ManifestLogType(Storage);
@@ -73,6 +74,7 @@ pub fn TreeType(comptime TreeTable: type, comptime Storage: type) type {
 
         table_mutable: TableMemory,
         table_immutable: TableMemory,
+        table_sorted: BTree,
 
         manifest: Manifest,
 
@@ -128,6 +130,7 @@ pub fn TreeType(comptime TreeTable: type, comptime Storage: type) type {
 
                 .table_mutable = undefined,
                 .table_immutable = undefined,
+                .table_sorted = undefined,
                 .manifest = undefined,
                 .compactions = undefined,
             };
@@ -141,6 +144,9 @@ pub fn TreeType(comptime TreeTable: type, comptime Storage: type) type {
                 .value_count_limit = value_count_limit,
             });
             errdefer tree.table_immutable.deinit(allocator);
+
+            tree.table_sorted = try BTree.init(allocator, value_count_limit);
+            errdefer tree.table_sorted.deinit(allocator);
 
             try tree.manifest.init(allocator, node_pool, config);
             errdefer tree.manifest.deinit(allocator);
@@ -162,6 +168,7 @@ pub fn TreeType(comptime TreeTable: type, comptime Storage: type) type {
             tree.table_mutable.reset();
             tree.table_immutable.reset();
             tree.manifest.reset();
+            tree.table_sorted.reset();
 
             for (&tree.compactions) |*compaction| compaction.reset();
 
@@ -171,6 +178,7 @@ pub fn TreeType(comptime TreeTable: type, comptime Storage: type) type {
                 .options = tree.options,
                 .table_mutable = tree.table_mutable,
                 .table_immutable = tree.table_immutable,
+                .table_sorted = tree.table_sorted,
                 .manifest = tree.manifest,
                 .compactions = tree.compactions,
             };
@@ -201,10 +209,12 @@ pub fn TreeType(comptime TreeTable: type, comptime Storage: type) type {
 
         pub fn put(tree: *Tree, value: *const Value) void {
             tree.table_mutable.put(value);
+            tree.table_sorted.put(value);
         }
 
         pub fn remove(tree: *Tree, value: *const Value) void {
             tree.table_mutable.put(&Table.tombstone_from_key(Table.key_from_value(value)));
+            tree.table_sorted.put(&Table.tombstone_from_key(Table.key_from_value(value)));
         }
 
         pub fn key_range_update(tree: *Tree, key: Key) void {
@@ -512,7 +522,7 @@ pub fn TreeType(comptime TreeTable: type, comptime Storage: type) type {
 
             // Spreads sort+deduplication work between beats, to avoid a latency spike at the end of
             // each bar (or immediately prior to scans).
-            tree.table_mutable.sort_suffix();
+            //tree.table_mutable.sort_suffix();
         }
 
         /// Called after the last beat of a full compaction bar, by the compaction instance.
@@ -533,7 +543,19 @@ pub fn TreeType(comptime TreeTable: type, comptime Storage: type) type {
             // In addition, the immutable table is conceptually an output table of this compaction
             // bar, and now its snapshot_min matches the snapshot_min of the Compactions' output
             // tables.
+            //--------------------------------------------
+            // TODO use btree here for sort order;
+            const new_count: u32 = @as(u32, @intCast(tree.table_sorted.count));
+            const values_copied = tree.table_sorted.copy_in_order(tree.table_mutable.values);
+            tree.table_mutable.value_context.count = new_count;
+            assert(new_count == values_copied);
+
+            tree.table_sorted.reset();
+            //--------------------------------------------
             tree.table_mutable.make_immutable(snapshot_min);
+            // TODO: check this
+            // assert(tree.table_mutable.value_context.count == new_count);
+
             tree.table_immutable.make_mutable();
             std.mem.swap(TableMemory, &tree.table_mutable, &tree.table_immutable);
 

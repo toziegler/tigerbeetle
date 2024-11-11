@@ -174,12 +174,12 @@ pub fn TableMemoryType(comptime Table: type) type {
             assert(offset == table.mutability.mutable.suffix_offset or offset == 0);
             assert(offset <= table.count());
 
-            std.mem.sort(
-                Value,
-                table.values_used()[offset..],
-                {},
-                sort_values_by_key_in_ascending_order,
-            );
+            //std.mem.sort(
+            //    Value,
+            //    table.values_used()[offset..],
+            //    {},
+            //    sort_values_by_key_in_ascending_order,
+            //);
 
             // Merge values with identical keys (last one wins) and collapse tombstones for
             // secondary indexes.

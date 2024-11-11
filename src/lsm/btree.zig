@@ -1,0 +1,533 @@
+const std = @import("std");
+const assert = std.debug.assert;
+
+pub fn BTreeType(comptime TableType: type) type {
+    // same style as the `TableMemoryType`
+    const Key = TableType.Key;
+    const Value = TableType.Value;
+    const key_from_value = TableType.key_from_value;
+    const order = 32;
+
+    return struct {
+        const Self = @This();
+        pub const LowerBoundResult = union(enum) {
+            exact_match: usize,
+            greater: usize,
+        };
+
+        const Inner = struct {
+            const hint_count = 16;
+            const inner_order = order * 16;
+            count: u16 = 0,
+            hints: [hint_count]Key,
+            keys: [inner_order]Key,
+            children: [inner_order]usize, // make this u32 ~ 17TB
+            //
+            fn init() Inner {
+                return .{
+                    .count = 0,
+                    .hints = undefined,
+                    .keys = undefined,
+                    .children = undefined,
+                };
+            }
+
+            fn make_hint(self: *Inner) void {
+                const dist = self.count / (hint_count + 1);
+                for (0..hint_count) |i| {
+                    self.hints[i] = self.keys[dist * (i + 1)];
+                }
+            }
+
+            fn search_hints(self: *const Inner, key: Key) struct { usize, usize } {
+                const dist: u16 = self.count / (hint_count + 1);
+
+                var pos: u16 = 0;
+                var pos2: u16 = 0;
+
+                // First loop: Find the position where hint[pos] >= key_head
+                while (pos < hint_count) : (pos += 1) {
+                    if (self.hints[pos] >= key) {
+                        break;
+                    }
+                }
+
+                // Second loop: Find the position where hint[pos2] != key_head
+                pos2 = pos;
+                while (pos2 < hint_count) : (pos2 += 1) {
+                    if (self.hints[pos2] != key) {
+                        break;
+                    }
+                }
+
+                // Calculate lower_out and upper_out based on positions found
+                const lower_out = pos * dist;
+                var upper_out = self.count;
+                if (pos2 < hint_count) {
+                    upper_out = ((pos2 + 1) * dist) + 1;
+                }
+                return .{ lower_out, upper_out };
+            }
+
+            fn update_hint(self: *Inner, slot_id: usize) void {
+                const dist = self.count / (hint_count + 1);
+
+                var begin: usize = 0;
+
+                if ((self.count > hint_count * 2 + 1) and ((self.count - 1) / (hint_count + 1) == dist) and ((slot_id / dist) > 1)) {
+                    begin = (slot_id / dist) - 1;
+                }
+
+                var i = begin;
+                while (i < hint_count) : (i += 1) {
+                    const idx = dist * (i + 1);
+                    self.hints[i] = self.keys[idx];
+                }
+
+                i = 0;
+                while (i < hint_count) : (i += 1) {
+                    const idx = dist * (i + 1);
+                    assert(self.hints[i] == self.keys[idx]);
+                }
+            }
+
+            pub fn is_full(self: *const Inner) bool {
+                return (self.count == inner_order - 1); // because of +1 of child
+            }
+
+            fn lower_bound(self: *const Inner, search_key: Key) LowerBoundResult {
+                const hints = self.search_hints(search_key);
+                const low: usize = hints.@"0";
+                const high: usize = hints.@"1";
+                assert(low < high);
+                assert(high <= self.count);
+
+                const S = struct {
+                    fn lower_key(context: void, lhs: Key, rhs: Key) bool {
+                        _ = context;
+                        return lhs < rhs;
+                    }
+                };
+                const pos = (std.sort.lowerBound(Key, search_key, self.keys[low..high], {}, S.lower_key)) + low; // offset with low offset
+
+                if (pos == self.count) {
+                    return .{ .greater = self.count };
+                }
+
+                switch (std.math.order(self.keys[pos], search_key)) {
+                    .lt => {
+                        unreachable;
+                    },
+                    .eq => {
+                        return .{ .exact_match = pos };
+                    },
+                    .gt => {
+                        return .{ .greater = pos };
+                    },
+                }
+            }
+
+            // returns the seperator
+            fn split(self: *Inner, new_inner: *Inner) Key {
+                assert(self.count >= 2);
+                new_inner.count = self.count - (self.count / 2);
+                self.count = self.count - new_inner.count - 1;
+                const sep = self.keys[self.count];
+                std.mem.copyBackwards(Key, new_inner.keys[0..], self.keys[self.count + 1 ..]); // not inclusive
+                std.mem.copyBackwards(usize, new_inner.children[0..], self.children[self.count + 1 ..]); // not inclusive
+                self.make_hint();
+                new_inner.make_hint();
+                return sep;
+            }
+
+            fn find_child(self: *const Inner, key: Key) usize {
+                const result = self.lower_bound(key);
+                switch (result) {
+                    .exact_match, .greater => |pos| {
+                        return self.children[pos];
+                    },
+                }
+            }
+
+            fn insert_slot(self: *Inner, pos: usize, key: Key, child: usize) void {
+                assert(pos <= self.count);
+                defer {
+                    // should be smaller than count because of the children (+1)
+                    assert(self.count < inner_order);
+                }
+                std.mem.copyBackwards(Key, self.keys[pos + 1 .. self.count + 1], self.keys[pos..self.count]);
+                std.mem.copyBackwards(usize, self.children[pos + 1 .. self.count + 2], self.children[pos .. self.count + 1]); // +1 since one child more than keys
+                self.keys[pos] = key;
+                self.children[pos] = child;
+                self.count += 1;
+                std.mem.swap(usize, &self.children[pos], &self.children[pos + 1]); // corrects the logic from above by swapping the children
+                self.update_hint(pos);
+            }
+
+            fn insert(self: *Inner, key: Key, child: usize) void {
+                // assert not full
+                const result = self.lower_bound(key);
+                switch (result) {
+                    .exact_match => {
+                        @panic("duplicate key in inner");
+                    },
+                    .greater => |pos| {
+                        self.insert_slot(pos, key, child);
+                    },
+                }
+            }
+        };
+
+        const Leaf = struct {
+            const hint_count = 8;
+            count: u16 = 0,
+            next_leaf: ?usize, // leaf pointer
+            hints: [hint_count]Key,
+            values: [order]Value,
+
+            fn init() Leaf {
+                return .{
+                    .count = 0,
+                    .hints = undefined,
+                    .values = undefined,
+                    .next_leaf = null,
+                };
+            }
+
+            fn make_hint(self: *Leaf) void {
+                const dist = self.count / (hint_count + 1);
+                for (0..hint_count) |i| {
+                    self.hints[i] = key_from_value(&self.values[dist * (i + 1)]);
+                }
+            }
+
+            fn search_hints(self: *const Leaf, key: Key) struct { usize, usize } {
+                const dist: u16 = self.count / (hint_count + 1);
+
+                var pos: u16 = 0;
+                var pos2: u16 = 0;
+
+                // First loop: Find the position where hint[pos] >= key_head
+                while (pos < hint_count) : (pos += 1) {
+                    if (self.hints[pos] >= key) {
+                        break;
+                    }
+                }
+
+                // Second loop: Find the position where hint[pos2] != key_head
+                pos2 = pos;
+                while (pos2 < hint_count) : (pos2 += 1) {
+                    if (self.hints[pos2] != key) {
+                        break;
+                    }
+                }
+
+                // Calculate lower_out and upper_out based on positions found
+                const lower_out = pos * dist;
+                var upper_out = self.count;
+                if (pos2 < hint_count) {
+                    upper_out = (pos2 + 1) * dist;
+                }
+                return .{ lower_out, upper_out };
+            }
+
+            fn update_hint(self: *Leaf, slot_id: usize) void {
+                const dist = self.count / (hint_count + 1);
+
+                var begin: usize = 0;
+
+                if ((self.count > hint_count * 2 + 1) and ((self.count - 1) / (hint_count + 1) == dist) and ((slot_id / dist) > 1)) {
+                    begin = (slot_id / dist) - 1;
+                }
+
+                var i = begin;
+                while (i < hint_count) : (i += 1) {
+                    const idx = dist * (i + 1);
+                    self.hints[i] = key_from_value(&self.values[idx]);
+                }
+
+                i = 0;
+                while (i < hint_count) : (i += 1) {
+                    const idx = dist * (i + 1);
+                    assert(self.hints[i] == key_from_value(&self.values[idx]));
+                }
+            }
+
+            fn insert_slot(self: *Leaf, pos: usize, value: *const Value) void {
+                assert(pos < order);
+                assert(pos <= self.count);
+
+                std.mem.copyBackwards(Value, self.values[pos + 1 .. self.count + 1], self.values[pos..self.count]);
+                self.values[pos] = value.*;
+                self.count += 1;
+                self.update_hint(pos);
+            }
+
+            fn is_full(self: *const Leaf) bool {
+                return (self.count == order - 1);
+            }
+
+            fn insert(self: *Leaf, value: *const Value) usize {
+                // assert not full
+                const result = self.lower_bound(key_from_value(value));
+                switch (result) {
+                    .exact_match => |pos| {
+                        self.values[pos] = value.*;
+                        return 0;
+                    },
+                    .greater => |pos| {
+                        self.insert_slot(pos, value);
+                        return 1;
+                    },
+                }
+            }
+
+            // returns the seperator links the leafs
+            fn split(self: *Leaf, new_leaf: *Leaf, new_leaf_id: usize) Key {
+                assert(self.count >= 2);
+                new_leaf.next_leaf = self.next_leaf;
+                self.next_leaf = new_leaf_id;
+                new_leaf.count = self.count - (self.count / 2);
+                self.count = self.count - new_leaf.count;
+                const sep = key_from_value(&self.values[self.count - 1]);
+                std.mem.copyBackwards(Value, new_leaf.values[0..], self.values[self.count..]);
+                self.make_hint();
+                new_leaf.make_hint();
+                return sep;
+            }
+
+            fn lookup(self: *const Leaf, value: Value) ?*const Value {
+                const result = self.lower_bound(key_from_value(&value));
+                switch (result) {
+                    .exact_match => |pos| {
+                        return &self.values[pos];
+                    },
+                    .greater => {
+                        return null;
+                    },
+                }
+            }
+
+            fn lower_bound(self: *const Leaf, search_key: Key) LowerBoundResult {
+                const hints = self.search_hints(search_key);
+                var low: usize = hints.@"0";
+                var high: usize = hints.@"1";
+
+                while (low < high) {
+                    const mid = low + ((high - low) / 2);
+                    const mid_key = key_from_value(&self.values[mid]);
+
+                    switch (std.math.order(mid_key, search_key)) {
+                        .lt => {
+                            low = mid + 1;
+                        },
+                        .eq => {
+                            return .{ .exact_match = mid };
+                        },
+                        .gt => {
+                            high = mid;
+                        },
+                    }
+                }
+
+                return .{ .greater = low };
+            }
+        };
+
+        height: u8 = 0,
+        count: usize = 0,
+
+        root: usize,
+        free_list_inner: usize = 0,
+        free_list_leaf: usize = 0,
+
+        max_height: usize = 0,
+        inners: []Inner,
+        leafs: []Leaf,
+
+        pub fn init(allocator: std.mem.Allocator, value_count_limit: usize) !Self {
+            const keys_min_leaf = (order - 1) / 2;
+            const total_leaf_nodes = std.math.ceil(@as(f64, @floatFromInt(value_count_limit)) / keys_min_leaf);
+
+            var total_nodes = total_leaf_nodes;
+            var level_nodes = total_leaf_nodes;
+            var height: u8 = 1;
+
+            while (level_nodes > 1) {
+                level_nodes = std.math.ceil(level_nodes / keys_min_leaf);
+                total_nodes += level_nodes;
+                height += 1;
+            }
+
+            const max_leaf_nodes: usize = @as(usize, @intFromFloat(total_leaf_nodes));
+            const max_inner_nodes: usize = @as(usize, @intFromFloat(total_nodes)) - max_leaf_nodes;
+            const max_height: usize = height;
+
+            std.debug.print("inner {} leafs {} \n", .{ max_inner_nodes, max_leaf_nodes });
+            std.debug.print("\n", .{});
+            // Initialize your B-tree here
+            const inners = try allocator.alloc(Inner, max_inner_nodes);
+            const leafs = try allocator.alloc(Leaf, max_leaf_nodes);
+            for (leafs) |*leaf| {
+                leaf.* = Leaf.init();
+            }
+            for (inners) |*inner| {
+                inner.* = Inner.init();
+            }
+            return Self{
+                .inners = inners,
+                .leafs = leafs,
+                .count = 0,
+                .root = 0,
+                .free_list_leaf = 1,
+                .max_height = max_height,
+            };
+        }
+
+        pub fn count(self: *Self) usize {
+            return self.count;
+        }
+
+        fn make_root(self: *Self, sep: Key, left: usize, right: usize) void {
+            const new_root_id = self.free_list_inner;
+            var new_root = &self.inners[new_root_id];
+            self.free_list_inner += 1;
+            self.root = new_root_id;
+            self.height += 1;
+            new_root.count = 1;
+            new_root.keys[0] = sep;
+            new_root.children[0] = left;
+            new_root.children[1] = right;
+        }
+
+        // TODO: refactor logic
+        pub fn put(self: *Self, value: *const Value) void {
+            outer: for (0..self.max_height) |_| {
+                var maybe_parent: ?usize = null;
+                var current_node = self.root;
+                var current_height = self.height;
+                const key = key_from_value(value);
+
+                while (current_height > 0) {
+                    var inner = &self.inners[current_node];
+                    if (inner.is_full()) {
+                        const new_inner_id = self.allocate_inner();
+                        const new_inner = &self.inners[new_inner_id];
+                        const sep = inner.split(new_inner);
+                        assert(new_inner.count > 1); // TODO: fix this
+                        assert(inner.count > 1);
+                        if (maybe_parent) |parent| {
+                            self.inners[parent].insert(sep, new_inner_id);
+                        } else {
+                            self.make_root(sep, current_node, new_inner_id);
+                        }
+                        continue :outer;
+                    }
+                    maybe_parent = current_node;
+                    current_node = self.inners[current_node].find_child(key);
+                    current_height -= 1;
+                }
+                // take leaf
+                var leaf = &self.leafs[current_node];
+                if (leaf.is_full()) {
+                    const new_leaf_id = self.allocate_leaf();
+                    const new_leaf = &self.leafs[new_leaf_id];
+                    const sep = leaf.split(new_leaf, new_leaf_id);
+                    if (maybe_parent) |parent| {
+                        self.inners[parent].insert(sep, new_leaf_id);
+                    } else {
+                        self.make_root(sep, current_node, new_leaf_id);
+                    }
+                    continue;
+                }
+                // TODO: refactor
+                self.count += leaf.insert(value);
+                return;
+            }
+            unreachable;
+        }
+
+        fn allocate_inner(self: *Self) usize {
+            assert(self.free_list_inner < self.inners.len);
+            const new_inner_id = self.free_list_inner;
+            self.free_list_inner += 1;
+            const inner = &self.inners[new_inner_id];
+            inner.* = Inner.init();
+            return new_inner_id;
+        }
+
+        fn allocate_leaf(self: *Self) usize {
+            // TODO: remove this debug
+            if (self.free_list_leaf >= self.leafs.len) {
+                std.debug.print("{any} {} {}\n", .{ TableType, self.free_list_leaf, self.count });
+            }
+            assert(self.free_list_leaf < self.leafs.len);
+            const new_leaf_id = self.free_list_leaf;
+            self.free_list_leaf += 1;
+            const leaf = &self.leafs[new_leaf_id];
+            leaf.* = Leaf.init();
+            return new_leaf_id;
+        }
+
+        pub fn get(self: *Self, value: *const Value) ?*const Value {
+            var maybe_parent: ?usize = null;
+            var current_node = self.root;
+            var current_height = self.height;
+            const key = key_from_value(value);
+
+            while (current_height > 0) {
+                maybe_parent = current_node;
+                current_node = self.inners[current_node].find_child(key);
+                current_height -= 1;
+            }
+            var leaf = &self.leafs[current_node];
+            return leaf.lookup(value.*);
+        }
+
+        pub fn reset(self: *Self) void {
+            self.count = 0;
+            self.height = 0;
+            self.root = 0;
+            self.free_list_inner = 0;
+            self.free_list_leaf = 0;
+            // should create new root at index 0
+            const new_root = self.allocate_leaf();
+            assert(self.root == new_root);
+            assert(self.free_list_leaf == 1);
+        }
+
+        pub fn copy_in_order(self: *const Self, target: []Value) usize {
+            // TODO: try to optimize this with batching. we can get the batches from the last inner leaves
+            // find the left most node
+            var maybe_next_leaf_id: ?usize = self.get_left_most_leaf();
+            // follow all links until the end
+            var offset: usize = 0;
+            while (maybe_next_leaf_id) |next_leaf_id| {
+                const leaf = &self.leafs[next_leaf_id];
+                // copy into the output
+                std.mem.copyForwards(Value, target[offset .. offset + leaf.count], leaf.values[0..leaf.count]);
+                offset += leaf.count;
+                maybe_next_leaf_id = leaf.next_leaf;
+            }
+            return offset;
+        }
+
+        fn get_left_most_leaf(self: *const Self) usize {
+            var maybe_parent: ?usize = null;
+            var current_node = self.root;
+            var current_height = self.height;
+
+            while (current_height > 0) {
+                maybe_parent = current_node;
+                current_node = self.inners[current_node].children[0];
+                current_height -= 1;
+            }
+            return current_node;
+        }
+
+        pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+            allocator.free(self.inners);
+            allocator.free(self.leafs);
+        }
+    };
+}

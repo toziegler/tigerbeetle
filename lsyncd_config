@@ -1,0 +1,29 @@
+settings {
+   nodaemon = true,
+}
+
+hosts = {
+    { ip='fn01', port=22 },
+}
+
+
+for _, host in ipairs(hosts)
+do
+  sync {
+    default.rsyncssh,
+    source = ".",
+    targetdir = "./own_tigerbeetle",
+    host = host.ip,
+    delay = 0,
+    ssh = {
+      port = host.port
+    },
+    rsync = {
+      perms = true,
+    },
+    filter = {
+      '- target/',
+      '- plots/',
+    },
+  }
+end
