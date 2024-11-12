@@ -208,12 +208,12 @@ pub fn TreeType(comptime TreeTable: type, comptime Storage: type) type {
         }
 
         pub fn put(tree: *Tree, value: *const Value) void {
-            tree.table_mutable.put(value);
+            //tree.table_mutable.put(value);
             tree.table_sorted.put(value);
         }
 
         pub fn remove(tree: *Tree, value: *const Value) void {
-            tree.table_mutable.put(&Table.tombstone_from_key(Table.key_from_value(value)));
+            //tree.table_mutable.put(&Table.tombstone_from_key(Table.key_from_value(value)));
             tree.table_sorted.put(&Table.tombstone_from_key(Table.key_from_value(value)));
         }
 
@@ -553,8 +553,8 @@ pub fn TreeType(comptime TreeTable: type, comptime Storage: type) type {
             tree.table_sorted.reset();
             //--------------------------------------------
             tree.table_mutable.make_immutable(snapshot_min);
-            // TODO: check this
-            // assert(tree.table_mutable.value_context.count == new_count);
+            // TODO: remove dedup - assert ensures that dedup is not needed.
+            assert(tree.table_mutable.value_context.count == new_count);
 
             tree.table_immutable.make_mutable();
             std.mem.swap(TableMemory, &tree.table_mutable, &tree.table_immutable);
