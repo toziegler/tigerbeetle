@@ -183,50 +183,50 @@ pub fn TableMemoryType(comptime Table: type) type {
 
             // Merge values with identical keys (last one wins) and collapse tombstones for
             // secondary indexes.
-            const source_count: u32 = table.count();
-            var source_index: u32 = offset;
-            var target_index: u32 = offset;
-            while (source_index < source_count) {
-                const value = table.values[source_index];
-                table.values[target_index] = value;
+            //const source_count: u32 = table.count();
+            //var source_index: u32 = offset;
+            //var target_index: u32 = offset;
+            //while (source_index < source_count) {
+            //    const value = table.values[source_index];
+            //    table.values[target_index] = value;
 
-                // If we're at the end of the source, there is no next value, so the next value
-                // can't be equal.
-                const value_next_equal = source_index + 1 < source_count and
-                    key_from_value(&table.values[source_index]) ==
-                    key_from_value(&table.values[source_index + 1]);
+            //    // If we're at the end of the source, there is no next value, so the next value
+            //    // can't be equal.
+            //    const value_next_equal = source_index + 1 < source_count and
+            //        key_from_value(&table.values[source_index]) ==
+            //        key_from_value(&table.values[source_index + 1]);
 
-                if (value_next_equal) {
-                    if (Table.usage == .secondary_index) {
-                        // Secondary index optimization --- cancel out put and remove.
-                        // NB: while this prevents redundant tombstones from getting to disk, we
-                        // still spend some extra CPU work to sort the entries in memory. Ideally,
-                        // we annihilate tombstones immediately, before sorting, but that's tricky
-                        // to do with scopes.
-                        assert(Table.tombstone(&table.values[source_index]) !=
-                            Table.tombstone(&table.values[source_index + 1]));
-                        source_index += 2;
-                        target_index += 0;
-                    } else {
-                        // The last value in a run of duplicates needs to be the one that ends up in
-                        // target.
-                        source_index += 1;
-                        target_index += 0;
-                    }
-                } else {
-                    source_index += 1;
-                    target_index += 1;
-                }
-            }
+            //    if (value_next_equal) {
+            //        if (Table.usage == .secondary_index) {
+            //            // Secondary index optimization --- cancel out put and remove.
+            //            // NB: while this prevents redundant tombstones from getting to disk, we
+            //            // still spend some extra CPU work to sort the entries in memory. Ideally,
+            //            // we annihilate tombstones immediately, before sorting, but that's tricky
+            //            // to do with scopes.
+            //            assert(Table.tombstone(&table.values[source_index]) !=
+            //                Table.tombstone(&table.values[source_index + 1]));
+            //            source_index += 2;
+            //            target_index += 0;
+            //        } else {
+            //            // The last value in a run of duplicates needs to be the one that ends up in
+            //            // target.
+            //            source_index += 1;
+            //            target_index += 0;
+            //        }
+            //    } else {
+            //        source_index += 1;
+            //        target_index += 1;
+            //    }
+            //}
 
             // At this point, source_index and target_index are actually counts.
             // source_index will always be incremented after the final iteration as part of the
             // continue expression.
             // target_index will always be incremented, since either source_index runs out first
             // so value_next_equal is false, or a new value is hit, which will increment it.
-            const target_count = target_index;
-            assert(target_count <= source_count);
-            assert(source_count == source_index);
+            const target_count = table.count();
+            //assert(target_count <= source_count);
+            //assert(source_count == source_index);
 
             if (constants.verify) {
                 if (offset < target_count) {

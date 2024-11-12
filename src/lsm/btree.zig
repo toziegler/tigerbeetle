@@ -363,6 +363,7 @@ pub fn BTreeType(comptime TableType: type) type {
             const max_inner_nodes: usize = @as(usize, @intFromFloat(total_nodes)) - max_leaf_nodes;
             const max_height: usize = height;
 
+            std.debug.print("TableType {any} size of key {} size of value {} \n", .{ TableType, @sizeOf(Key), @sizeOf(Value) });
             std.debug.print("inner {} leafs {} \n", .{ max_inner_nodes, max_leaf_nodes });
             std.debug.print("\n", .{});
             // Initialize your B-tree here
