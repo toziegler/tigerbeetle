@@ -7,16 +7,20 @@ pub fn BTreeType(comptime TableType: type) type {
     const Value = TableType.Value;
     const key_from_value = TableType.key_from_value;
     // size based calculation
-    const leaf_size = 65536;
-    const inner_size = 65536;
+    const leaf_size = 32768;
+    const inner_size = 32768;
     const order = leaf_size / @sizeOf(Value);
     const inner_order = inner_size / @sizeOf(Key);
+    const hint_size = 256; // 8 CL
+    const hint_count = hint_size / @sizeOf(Key);
+
+    const PtrType = u32;
 
     return struct {
         const Self = @This();
         pub const LowerBoundResult = union(enum) {
-            exact_match: usize,
-            greater: usize,
+            exact_match: PtrType,
+            greater: PtrType,
         };
 
         const Inner = struct {
@@ -24,7 +28,7 @@ pub fn BTreeType(comptime TableType: type) type {
             count: u16 = 0,
             hints: [hint_count]Key,
             keys: [inner_order]Key,
-            children: [inner_order]usize, // make this u32 ~ 17TB
+            children: [inner_order]PtrType, // make this u32 ~ 17TB
             //
             fn init() Inner {
                 return .{
@@ -122,10 +126,10 @@ pub fn BTreeType(comptime TableType: type) type {
                         unreachable;
                     },
                     .eq => {
-                        return .{ .exact_match = pos };
+                        return .{ .exact_match = @as(PtrType, @intCast(pos)) };
                     },
                     .gt => {
-                        return .{ .greater = pos };
+                        return .{ .greater = @as(PtrType, @intCast(pos)) };
                     },
                 }
             }
@@ -137,13 +141,13 @@ pub fn BTreeType(comptime TableType: type) type {
                 self.count = self.count - new_inner.count - 1;
                 const sep = self.keys[self.count];
                 std.mem.copyBackwards(Key, new_inner.keys[0..], self.keys[self.count + 1 ..]); // not inclusive
-                std.mem.copyBackwards(usize, new_inner.children[0..], self.children[self.count + 1 ..]); // not inclusive
+                std.mem.copyBackwards(PtrType, new_inner.children[0..], self.children[self.count + 1 ..]); // not inclusive
                 self.make_hint();
                 new_inner.make_hint();
                 return sep;
             }
 
-            fn find_child(self: *const Inner, key: Key) usize {
+            fn find_child(self: *const Inner, key: Key) PtrType {
                 const result = self.lower_bound(key);
                 switch (result) {
                     .exact_match, .greater => |pos| {
@@ -152,22 +156,22 @@ pub fn BTreeType(comptime TableType: type) type {
                 }
             }
 
-            fn insert_slot(self: *Inner, pos: usize, key: Key, child: usize) void {
+            fn insert_slot(self: *Inner, pos: PtrType, key: Key, child: PtrType) void {
                 assert(pos <= self.count);
                 defer {
                     // should be smaller than count because of the children (+1)
                     assert(self.count < inner_order);
                 }
                 std.mem.copyBackwards(Key, self.keys[pos + 1 .. self.count + 1], self.keys[pos..self.count]);
-                std.mem.copyBackwards(usize, self.children[pos + 1 .. self.count + 2], self.children[pos .. self.count + 1]); // +1 since one child more than keys
+                std.mem.copyBackwards(PtrType, self.children[pos + 1 .. self.count + 2], self.children[pos .. self.count + 1]); // +1 since one child more than keys
                 self.keys[pos] = key;
                 self.children[pos] = child;
                 self.count += 1;
-                std.mem.swap(usize, &self.children[pos], &self.children[pos + 1]); // corrects the logic from above by swapping the children
+                std.mem.swap(PtrType, &self.children[pos], &self.children[pos + 1]); // corrects the logic from above by swapping the children
                 self.update_hint(pos);
             }
 
-            fn insert(self: *Inner, key: Key, child: usize) void {
+            fn insert(self: *Inner, key: Key, child: PtrType) void {
                 // assert not full
                 const result = self.lower_bound(key);
                 switch (result) {
@@ -184,7 +188,7 @@ pub fn BTreeType(comptime TableType: type) type {
         const Leaf = struct {
             count: u16 = 0,
             sorted: bool = false,
-            next_leaf: ?usize, // leaf pointer
+            next_leaf: ?PtrType, // leaf pointer
             values: [order]Value,
 
             fn init() Leaf {
@@ -252,7 +256,7 @@ pub fn BTreeType(comptime TableType: type) type {
             }
 
             // returns the seperator links the leafs
-            fn split(self: *Leaf, new_leaf: *Leaf, new_leaf_id: usize) Key {
+            fn split(self: *Leaf, new_leaf: *Leaf, new_leaf_id: PtrType) Key {
                 assert(self.count >= 2);
                 new_leaf.next_leaf = self.next_leaf;
                 self.next_leaf = new_leaf_id;
@@ -291,7 +295,7 @@ pub fn BTreeType(comptime TableType: type) type {
                             low = mid + 1;
                         },
                         .eq => {
-                            return .{ .exact_match = mid };
+                            return .{ .exact_match = @as(PtrType, @intCast(mid)) };
                         },
                         .gt => {
                             high = mid;
@@ -299,15 +303,15 @@ pub fn BTreeType(comptime TableType: type) type {
                     }
                 }
 
-                return .{ .greater = low };
+                return .{ .greater = @as(PtrType, @intCast(low)) };
             }
         };
 
         height: u32 = 0,
 
-        root: usize,
-        free_list_inner: usize = 0,
-        free_list_leaf: usize = 0,
+        root: PtrType,
+        free_list_inner: PtrType = 0,
+        free_list_leaf: PtrType = 0,
 
         max_height: usize = 0,
         inners: []Inner,
@@ -350,7 +354,7 @@ pub fn BTreeType(comptime TableType: type) type {
             };
         }
 
-        fn make_root(self: *Self, sep: Key, left: usize, right: usize) void {
+        fn make_root(self: *Self, sep: Key, left: PtrType, right: PtrType) void {
             const new_root_id = self.free_list_inner;
             var new_root = &self.inners[new_root_id];
             self.free_list_inner += 1;
@@ -365,7 +369,7 @@ pub fn BTreeType(comptime TableType: type) type {
         // TODO: refactor logic
         pub fn put(self: *Self, value: *const Value) void {
             outer: for (0..self.max_height) |_| {
-                var maybe_parent: ?usize = null;
+                var maybe_parent: ?PtrType = null;
                 var current_node = self.root;
                 var current_height = self.height;
                 const key = key_from_value(value);
@@ -409,7 +413,7 @@ pub fn BTreeType(comptime TableType: type) type {
             unreachable;
         }
 
-        fn allocate_inner(self: *Self) usize {
+        fn allocate_inner(self: *Self) PtrType {
             assert(self.free_list_inner < self.inners.len);
             const new_inner_id = self.free_list_inner;
             self.free_list_inner += 1;
@@ -418,7 +422,7 @@ pub fn BTreeType(comptime TableType: type) type {
             return new_inner_id;
         }
 
-        fn allocate_leaf(self: *Self) usize {
+        fn allocate_leaf(self: *Self) PtrType {
             assert(self.free_list_leaf < self.leafs.len);
             const new_leaf_id = self.free_list_leaf;
             self.free_list_leaf += 1;
@@ -428,7 +432,7 @@ pub fn BTreeType(comptime TableType: type) type {
         }
 
         pub fn get(self: *Self, value: *const Value) ?*const Value {
-            var maybe_parent: ?usize = null;
+            var maybe_parent: ?PtrType = null;
             var current_node = self.root;
             var current_height = self.height;
             const key = key_from_value(value);
@@ -456,7 +460,7 @@ pub fn BTreeType(comptime TableType: type) type {
         pub fn copy_in_order(self: *const Self, target: []Value) usize {
             // TODO: try to optimize this with batching. we can get the batches from the last inner leaves
             // find the left most node
-            var maybe_next_leaf_id: ?usize = self.get_left_most_leaf();
+            var maybe_next_leaf_id: ?PtrType = self.get_left_most_leaf();
             // follow all links until the end
             var offset: usize = 0;
             while (maybe_next_leaf_id) |next_leaf_id| {
@@ -472,7 +476,7 @@ pub fn BTreeType(comptime TableType: type) type {
             return offset;
         }
 
-        fn get_left_most_leaf(self: *const Self) usize {
+        fn get_left_most_leaf(self: *const Self) PtrType {
             var maybe_parent: ?usize = null;
             var current_node = self.root;
             var current_height = self.height;
