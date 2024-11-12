@@ -179,78 +179,16 @@ pub fn BTreeType(comptime TableType: type) type {
         };
 
         const Leaf = struct {
-            const hint_count = 8;
             count: u16 = 0,
             next_leaf: ?usize, // leaf pointer
-            hints: [hint_count]Key,
             values: [order]Value,
 
             fn init() Leaf {
                 return .{
                     .count = 0,
-                    .hints = undefined,
                     .values = undefined,
                     .next_leaf = null,
                 };
-            }
-
-            fn make_hint(self: *Leaf) void {
-                const dist = self.count / (hint_count + 1);
-                for (0..hint_count) |i| {
-                    self.hints[i] = key_from_value(&self.values[dist * (i + 1)]);
-                }
-            }
-
-            fn search_hints(self: *const Leaf, key: Key) struct { usize, usize } {
-                const dist: u16 = self.count / (hint_count + 1);
-
-                var pos: u16 = 0;
-                var pos2: u16 = 0;
-
-                // First loop: Find the position where hint[pos] >= key_head
-                while (pos < hint_count) : (pos += 1) {
-                    if (self.hints[pos] >= key) {
-                        break;
-                    }
-                }
-
-                // Second loop: Find the position where hint[pos2] != key_head
-                pos2 = pos;
-                while (pos2 < hint_count) : (pos2 += 1) {
-                    if (self.hints[pos2] != key) {
-                        break;
-                    }
-                }
-
-                // Calculate lower_out and upper_out based on positions found
-                const lower_out = pos * dist;
-                var upper_out = self.count;
-                if (pos2 < hint_count) {
-                    upper_out = (pos2 + 1) * dist;
-                }
-                return .{ lower_out, upper_out };
-            }
-
-            fn update_hint(self: *Leaf, slot_id: usize) void {
-                const dist = self.count / (hint_count + 1);
-
-                var begin: usize = 0;
-
-                if ((self.count > hint_count * 2 + 1) and ((self.count - 1) / (hint_count + 1) == dist) and ((slot_id / dist) > 1)) {
-                    begin = (slot_id / dist) - 1;
-                }
-
-                var i = begin;
-                while (i < hint_count) : (i += 1) {
-                    const idx = dist * (i + 1);
-                    self.hints[i] = key_from_value(&self.values[idx]);
-                }
-
-                i = 0;
-                while (i < hint_count) : (i += 1) {
-                    const idx = dist * (i + 1);
-                    assert(self.hints[i] == key_from_value(&self.values[idx]));
-                }
             }
 
             fn insert_slot(self: *Leaf, pos: usize, value: *const Value) void {
@@ -260,7 +198,6 @@ pub fn BTreeType(comptime TableType: type) type {
                 std.mem.copyBackwards(Value, self.values[pos + 1 .. self.count + 1], self.values[pos..self.count]);
                 self.values[pos] = value.*;
                 self.count += 1;
-                self.update_hint(pos);
             }
 
             fn is_full(self: *const Leaf) bool {
@@ -291,8 +228,6 @@ pub fn BTreeType(comptime TableType: type) type {
                 self.count = self.count - new_leaf.count;
                 const sep = key_from_value(&self.values[self.count - 1]);
                 std.mem.copyBackwards(Value, new_leaf.values[0..], self.values[self.count..]);
-                self.make_hint();
-                new_leaf.make_hint();
                 return sep;
             }
 
@@ -309,9 +244,8 @@ pub fn BTreeType(comptime TableType: type) type {
             }
 
             fn lower_bound(self: *const Leaf, search_key: Key) LowerBoundResult {
-                const hints = self.search_hints(search_key);
-                var low: usize = hints.@"0";
-                var high: usize = hints.@"1";
+                var low: usize = 0;
+                var high: usize = self.count;
 
                 while (low < high) {
                     const mid = low + ((high - low) / 2);
