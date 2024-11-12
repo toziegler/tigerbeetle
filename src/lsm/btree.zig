@@ -20,7 +20,7 @@ pub fn BTreeType(comptime TableType: type) type {
         };
 
         const Inner = struct {
-            const hint_count = 16;
+            //const hint_count = 16;
             count: u16 = 0,
             hints: [hint_count]Key,
             keys: [inner_order]Key,
