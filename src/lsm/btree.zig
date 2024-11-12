@@ -8,13 +8,14 @@ pub fn BTreeType(comptime TableType: type) type {
     const key_from_value = TableType.key_from_value;
     // size based calculation
     const leaf_size = 32768;
-    const inner_size = 32768;
-    const order = leaf_size / @sizeOf(Value);
-    const inner_order = inner_size / @sizeOf(Key);
-    const hint_size = 256; // 8 CL
-    const hint_count = hint_size / @sizeOf(Key);
-
+    //const inner_size = 16384;
+    const inner_size = 8192;
+    //const inner_size = 4096;
     const PtrType = u32;
+    const order = leaf_size / @sizeOf(Value);
+    const inner_order = inner_size / (@sizeOf(Key) + @sizeOf(PtrType));
+    const hint_size = 128; // 8 CL
+    const hint_count = hint_size / @sizeOf(Key);
 
     return struct {
         const Self = @This();
@@ -26,6 +27,8 @@ pub fn BTreeType(comptime TableType: type) type {
         const Inner = struct {
             //const hint_count = 16;
             count: u16 = 0,
+            // padding
+            padding: [62]u8 = [_]u8{0} ** 62,
             hints: [hint_count]Key,
             keys: [inner_order]Key,
             children: [inner_order]PtrType, // make this u32 ~ 17TB
@@ -50,21 +53,13 @@ pub fn BTreeType(comptime TableType: type) type {
                 const dist: u16 = self.count / (hint_count + 1);
 
                 var pos: u16 = 0;
-                var pos2: u16 = 0;
-
-                // First loop: Find the position where hint[pos] >= key_head
-                while (pos < hint_count) : (pos += 1) {
-                    if (self.hints[pos] >= key) {
-                        break;
-                    }
+                for (self.hints) |hint| {
+                    pos += @intFromBool((hint < key));
                 }
 
-                // Second loop: Find the position where hint[pos2] != key_head
-                pos2 = pos;
-                while (pos2 < hint_count) : (pos2 += 1) {
-                    if (self.hints[pos2] != key) {
-                        break;
-                    }
+                var pos2: u16 = pos;
+                for (self.hints) |hint| {
+                    pos2 += @intFromBool((hint == key));
                 }
 
                 // Calculate lower_out and upper_out based on positions found
@@ -102,6 +97,14 @@ pub fn BTreeType(comptime TableType: type) type {
                 return (self.count == inner_order - 1); // because of +1 of child
             }
 
+            fn linear_counting_search(keys: []const Key, search_key: Key) usize {
+                var count: usize = 0;
+                for (keys) |*key| {
+                    count += @intFromBool(key.* < search_key);
+                }
+                return count;
+            }
+
             fn lower_bound(self: *const Inner, search_key: Key) LowerBoundResult {
                 const hints = self.search_hints(search_key);
                 const low: usize = hints.@"0";
@@ -109,13 +112,14 @@ pub fn BTreeType(comptime TableType: type) type {
                 assert(low < high);
                 assert(high <= self.count);
 
-                const S = struct {
-                    fn lower_key(context: void, lhs: Key, rhs: Key) bool {
-                        _ = context;
-                        return lhs < rhs;
-                    }
-                };
-                const pos = (std.sort.lowerBound(Key, search_key, self.keys[low..high], {}, S.lower_key)) + low; // offset with low offset
+                //const S = struct {
+                //    fn lower_key(context: void, lhs: Key, rhs: Key) bool {
+                //        _ = context;
+                //        return lhs < rhs;
+                //    }
+                //};
+                //const pos = (std.sort.lowerBound(Key, search_key, self.keys[low..high], {}, S.lower_key)) + low; // offset with low offset
+                const pos = linear_counting_search(self.keys[low..high], search_key) + low; // offset with low offset
 
                 if (pos == self.count) {
                     return .{ .greater = self.count };
@@ -314,8 +318,8 @@ pub fn BTreeType(comptime TableType: type) type {
         free_list_leaf: PtrType = 0,
 
         max_height: usize = 0,
-        inners: []Inner,
-        leafs: []Leaf,
+        inners: []align(64) Inner,
+        leafs: []align(64) Leaf,
 
         pub fn init(allocator: std.mem.Allocator, value_count_limit: usize) !Self {
             const min_order = @min(order, inner_order);
@@ -337,8 +341,9 @@ pub fn BTreeType(comptime TableType: type) type {
             const max_height: usize = height;
 
             // Initialize your B-tree here
-            const inners = try allocator.alloc(Inner, max_inner_nodes);
-            const leafs = try allocator.alloc(Leaf, max_leaf_nodes);
+            //const t = try allocator.alignedAlloc(u64, 64, max_inner_nodes);
+            const inners = try allocator.alignedAlloc(Inner, 64, max_inner_nodes);
+            const leafs = try allocator.alignedAlloc(Leaf, 64, max_leaf_nodes);
             for (leafs) |*leaf| {
                 leaf.* = Leaf.init();
             }
@@ -447,6 +452,7 @@ pub fn BTreeType(comptime TableType: type) type {
         }
 
         pub fn reset(self: *Self) void {
+            std.debug.print("reset tree height {} \n", .{self.height});
             self.height = 0;
             self.root = 0;
             self.free_list_inner = 0;
