@@ -7,8 +7,8 @@ pub fn BTreeType(comptime TableType: type) type {
     const Value = TableType.Value;
     const key_from_value = TableType.key_from_value;
     // size based calculation
-    const leaf_size = 65536;
-    const inner_size = 65536;
+    const leaf_size = 4096;
+    const inner_size = 4096;
     const order = leaf_size / @sizeOf(Value);
     const inner_order = inner_size / @sizeOf(Key);
 
@@ -303,7 +303,7 @@ pub fn BTreeType(comptime TableType: type) type {
             }
         };
 
-        height: u32 = 0,
+        height: u8 = 0,
 
         root: usize,
         free_list_inner: usize = 0,
@@ -314,13 +314,12 @@ pub fn BTreeType(comptime TableType: type) type {
         leafs: []Leaf,
 
         pub fn init(allocator: std.mem.Allocator, value_count_limit: usize) !Self {
-            const min_order = @min(order, inner_order);
-            const keys_min_leaf = (min_order - 1) / 2;
+            const keys_min_leaf = (order - 1) / 2;
             const total_leaf_nodes = std.math.ceil(@as(f64, @floatFromInt(value_count_limit)) / keys_min_leaf);
 
             var total_nodes = total_leaf_nodes;
             var level_nodes = total_leaf_nodes;
-            var height: u32 = 1;
+            var height: u8 = 1;
 
             while (level_nodes > 1) {
                 level_nodes = std.math.ceil(level_nodes / keys_min_leaf);
@@ -332,6 +331,9 @@ pub fn BTreeType(comptime TableType: type) type {
             const max_inner_nodes: usize = @as(usize, @intFromFloat(total_nodes)) - max_leaf_nodes;
             const max_height: usize = height;
 
+            std.debug.print("TableType {any} size of key {} size of value {} \n", .{ TableType, @sizeOf(Key), @sizeOf(Value) });
+            std.debug.print("inner {} leafs {} \n", .{ max_inner_nodes, max_leaf_nodes });
+            std.debug.print("\n", .{});
             // Initialize your B-tree here
             const inners = try allocator.alloc(Inner, max_inner_nodes);
             const leafs = try allocator.alloc(Leaf, max_leaf_nodes);
