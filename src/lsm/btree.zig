@@ -6,7 +6,11 @@ pub fn BTreeType(comptime TableType: type) type {
     const Key = TableType.Key;
     const Value = TableType.Value;
     const key_from_value = TableType.key_from_value;
-    const order = 32;
+    // size based calculation
+    const leaf_size = 4096;
+    const inner_size = 4096;
+    const order = leaf_size / @sizeOf(Value);
+    const inner_order = inner_size / @sizeOf(Key);
 
     return struct {
         const Self = @This();
@@ -17,7 +21,6 @@ pub fn BTreeType(comptime TableType: type) type {
 
         const Inner = struct {
             const hint_count = 16;
-            const inner_order = order * 16;
             count: u16 = 0,
             hints: [hint_count]Key,
             keys: [inner_order]Key,
@@ -180,12 +183,14 @@ pub fn BTreeType(comptime TableType: type) type {
 
         const Leaf = struct {
             count: u16 = 0,
+            sorted: bool = false,
             next_leaf: ?usize, // leaf pointer
             values: [order]Value,
 
             fn init() Leaf {
                 return .{
                     .count = 0,
+                    .sorted = false,
                     .values = undefined,
                     .next_leaf = null,
                 };
@@ -200,23 +205,50 @@ pub fn BTreeType(comptime TableType: type) type {
                 self.count += 1;
             }
 
-            fn is_full(self: *const Leaf) bool {
+            fn sort_values_by_key_in_ascending_order(_: void, a: Value, b: Value) bool {
+                return key_from_value(&a) < key_from_value(&b);
+            }
+
+            fn sort_and_deduplicate(self: *Leaf) void {
+                assert(!self.sorted);
+                std.mem.sort(Value, self.values[0..self.count], {}, Leaf.sort_values_by_key_in_ascending_order);
+                // dedup
+                const source_count = self.count;
+                var source_index: usize = 0;
+                var target_index: usize = 0;
+
+                while (source_index < source_count) {
+                    const value = self.values[source_index];
+                    self.values[target_index] = value;
+
+                    // Determine if the next value is the same as the current one.
+                    const is_next_duplicate = source_index + 1 < source_count and
+                        key_from_value(&self.values[source_index]) == key_from_value(&self.values[source_index + 1]);
+
+                    // Move source_index forward, only increment target_index if no duplicate was found.
+                    source_index += 1;
+                    if (!is_next_duplicate) {
+                        target_index += 1;
+                    }
+                }
+                self.count = @as(u16, @intCast(target_index));
+                self.sorted = true;
+            }
+
+            fn is_full(self: *Leaf) bool {
+                const full = (self.count == order - 1);
+                if (!full) return false;
+
+                if (!self.sorted) {
+                    self.sort_and_deduplicate();
+                }
                 return (self.count == order - 1);
             }
 
-            fn insert(self: *Leaf, value: *const Value) usize {
-                // assert not full
-                const result = self.lower_bound(key_from_value(value));
-                switch (result) {
-                    .exact_match => |pos| {
-                        self.values[pos] = value.*;
-                        return 0;
-                    },
-                    .greater => |pos| {
-                        self.insert_slot(pos, value);
-                        return 1;
-                    },
-                }
+            fn insert(self: *Leaf, value: *const Value) void {
+                self.values[self.count] = value.*;
+                self.count += 1;
+                self.sorted = false;
             }
 
             // returns the seperator links the leafs
@@ -231,7 +263,10 @@ pub fn BTreeType(comptime TableType: type) type {
                 return sep;
             }
 
-            fn lookup(self: *const Leaf, value: Value) ?*const Value {
+            fn lookup(self: *Leaf, value: Value) ?*const Value {
+                if (!self.sorted) {
+                    self.sort_and_deduplicate();
+                }
                 const result = self.lower_bound(key_from_value(&value));
                 switch (result) {
                     .exact_match => |pos| {
@@ -269,7 +304,6 @@ pub fn BTreeType(comptime TableType: type) type {
         };
 
         height: u8 = 0,
-        count: usize = 0,
 
         root: usize,
         free_list_inner: usize = 0,
@@ -312,15 +346,10 @@ pub fn BTreeType(comptime TableType: type) type {
             return Self{
                 .inners = inners,
                 .leafs = leafs,
-                .count = 0,
                 .root = 0,
                 .free_list_leaf = 1,
                 .max_height = max_height,
             };
-        }
-
-        pub fn count(self: *Self) usize {
-            return self.count;
         }
 
         fn make_root(self: *Self, sep: Key, left: usize, right: usize) void {
@@ -376,7 +405,7 @@ pub fn BTreeType(comptime TableType: type) type {
                     continue;
                 }
                 // TODO: refactor
-                self.count += leaf.insert(value);
+                leaf.insert(value);
                 return;
             }
             unreachable;
@@ -392,10 +421,6 @@ pub fn BTreeType(comptime TableType: type) type {
         }
 
         fn allocate_leaf(self: *Self) usize {
-            // TODO: remove this debug
-            if (self.free_list_leaf >= self.leafs.len) {
-                std.debug.print("{any} {} {}\n", .{ TableType, self.free_list_leaf, self.count });
-            }
             assert(self.free_list_leaf < self.leafs.len);
             const new_leaf_id = self.free_list_leaf;
             self.free_list_leaf += 1;
@@ -420,7 +445,6 @@ pub fn BTreeType(comptime TableType: type) type {
         }
 
         pub fn reset(self: *Self) void {
-            self.count = 0;
             self.height = 0;
             self.root = 0;
             self.free_list_inner = 0;
@@ -439,6 +463,9 @@ pub fn BTreeType(comptime TableType: type) type {
             var offset: usize = 0;
             while (maybe_next_leaf_id) |next_leaf_id| {
                 const leaf = &self.leafs[next_leaf_id];
+                if (!leaf.sorted) {
+                    leaf.sort_and_deduplicate();
+                }
                 // copy into the output
                 std.mem.copyForwards(Value, target[offset .. offset + leaf.count], leaf.values[0..leaf.count]);
                 offset += leaf.count;

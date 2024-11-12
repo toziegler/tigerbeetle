@@ -545,16 +545,15 @@ pub fn TreeType(comptime TreeTable: type, comptime Storage: type) type {
             // tables.
             //--------------------------------------------
             // TODO use btree here for sort order;
-            const new_count: u32 = @as(u32, @intCast(tree.table_sorted.count));
+            //const new_count: u32 = @as(u32, @intCast(tree.table_sorted.count));
             const values_copied = tree.table_sorted.copy_in_order(tree.table_mutable.values);
-            tree.table_mutable.value_context.count = new_count;
-            assert(new_count == values_copied);
+            tree.table_mutable.value_context.count = @as(u32, @intCast(values_copied));
 
             tree.table_sorted.reset();
             //--------------------------------------------
             tree.table_mutable.make_immutable(snapshot_min);
             // TODO: remove dedup - assert ensures that dedup is not needed.
-            assert(tree.table_mutable.value_context.count == new_count);
+            assert(tree.table_mutable.value_context.count == values_copied);
 
             tree.table_immutable.make_mutable();
             std.mem.swap(TableMemory, &tree.table_mutable, &tree.table_immutable);
