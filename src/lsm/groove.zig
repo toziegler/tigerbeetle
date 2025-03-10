@@ -1226,6 +1226,7 @@ pub fn GrooveType(
                 assert(existing.timestamp == 0);
             }
 
+            // For `account_events` could we avoid this line here?
             groove.objects_cache.upsert(object);
 
             if (has_id) {

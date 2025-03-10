@@ -2577,6 +2577,7 @@ pub fn StateMachineType(
                 });
             }
 
+            // Here we update the append-only `account_event`.
             self.account_event(.{
                 .event_timestamp = t2.timestamp,
                 .dr_account = &dr_account_new,
@@ -3027,6 +3028,11 @@ pub fn StateMachineType(
                 },
             }
 
+            // Here we insert a new `account_event` in the groove.
+            // This updates the `object_cache`, I wonder if we could avoid this.
+            // The reason is that it is append-only and it should be fine to insert it only
+            // in the `table_mutable`
+            //
             // For CDC we always insert the history regardless `Account.flags.history`.
             self.forest.grooves.account_events.insert(&.{
                 .timestamp = args.event_timestamp,
